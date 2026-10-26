@@ -1,0 +1,18 @@
+{
+    "default": "bot",
+    "targets": {
+        "bot": {
+            "url": "https://example.com/automations/webhook/<id>",
+            "keyFile": "~/.orca-notify/keys/bot.key"
+        },
+        "phone": {
+            "url": "https://ntfy.example.com/hooks/orca"
+        }
+    },
+    "byWorktree": {
+        "<worktreeId>": "bot"
+    },
+    "byRepo": {
+        "<repoId>": "phone"
+    }
+}

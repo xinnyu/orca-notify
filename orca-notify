@@ -1,0 +1,70 @@
+#!/bin/bash
+# orca-notify — manage the Orca -> webhook notifier.
+#   orca-notify pair                         paste an Orca pairing code (stdin) -> .pairing.json
+#   orca-notify target add <name> <url> [--no-key] [--default]   key read from stdin -> <dir>/keys/<name>.key (600)
+#   orca-notify target remove <name> | target list | target default <name>
+#   orca-notify route worktree|repo <id> <target>   route a worktree/repo id to a target
+#   orca-notify watch add <paneKey|term_handle> [label] [--target <name>]
+#   orca-notify watch remove <key> | watch list
+#   orca-notify test [target]                POST a sample event
+#   orca-notify status | tail [n] | restart
+set -euo pipefail
+D="${ORCA_NOTIFY_DIR:-$HOME/.orca-notify}"
+LABEL="${ORCA_NOTIFY_LABEL:-$(cat "$D/.label" 2>/dev/null || echo dev.orca-notify)}"
+E="${ORCA_APP:-/Applications/Orca.app}/Contents/MacOS/Orca"
+W="$D/watch.json"; R="$D/routes.json"
+mkdir -p "$D"; [ -f "$W" ] || echo '{}' > "$W"; [ -f "$R" ] || echo '{"targets":{}}' > "$R"
+umask 077
+
+jsrun() { # run inline JS with Orca's node runtime (fallback: node)
+  if [ -x "$E" ]; then ELECTRON_RUN_AS_NODE=1 "$E" -e "$1" -- "${@:2}"; else node -e "$1" -- "${@:2}"; fi; }
+JSLIB='const fs=require("fs");const _ai=process.argv.indexOf("--");const a=process.argv.slice(_ai>=0?_ai+1:1);
+const rj=f=>JSON.parse(fs.readFileSync(f,"utf8"));const wj=(f,o)=>{fs.writeFileSync(f+".tmp",JSON.stringify(o,null,1));fs.renameSync(f+".tmp",f)};'
+usage() { sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+
+cmd="${1:-}"; sub="${2:-}"
+case "$cmd" in
+ pair)
+   echo "Paste the Orca pairing code (orca://pair?code=...) and press Enter:" >&2
+   IFS= read -r code; [ -n "$code" ] || { echo "empty code" >&2; exit 2; }
+   if [ -x "$E" ]; then printf '%s' "$code" | ELECTRON_RUN_AS_NODE=1 "$E" "$D/pair.js" "$D/.pairing.json"
+   else printf '%s' "$code" | node "$D/pair.js" "$D/.pairing.json"; fi
+   echo "Restart the listener: orca-notify restart" ;;
+ target)
+   case "$sub" in
+    add) name="${3:?name}"; url="${4:?url}"; shift 4; nokey=0; def=0
+      for x in "$@"; do case "$x" in --no-key) nokey=1;; --default) def=1;; *) echo "unknown $x"; exit 2;; esac; done
+      kf=""; if [ $nokey = 0 ]; then mkdir -p "$D/keys"; chmod 700 "$D/keys"; kf="$D/keys/$name.key"
+        [ -t 0 ] && echo "Paste the bearer key for '$name' and press Enter (input hidden):" >&2
+        if [ -t 0 ]; then IFS= read -rs key; echo >&2; else IFS= read -r key || true; fi
+        [ -n "$key" ] || { echo "empty key (use --no-key for unauthenticated endpoints)" >&2; exit 2; }
+        printf '%s' "$key" > "$kf"; chmod 600 "$kf"; unset key; fi
+      jsrun "$JSLIB"'const[f,n,u,k,d]=a;const r=rj(f);r.targets=r.targets||{};r.targets[n]={url:u,keyFile:k||undefined};if(d==="1"||!r.default)r.default=n;wj(f,r);console.log("target",n,"saved; default =",r.default)' "$R" "$name" "$url" "$kf" "$def" ;;
+    remove) jsrun "$JSLIB"'const[f,n]=a;const r=rj(f);const t=(r.targets||{})[n];if(!t){console.log("not found",n);process.exit(1)}if(t.keyFile)try{fs.unlinkSync(t.keyFile)}catch{}delete r.targets[n];if(r.default===n)delete r.default;wj(f,r);console.log("removed",n)' "$R" "${3:?name}" ;;
+    default) jsrun "$JSLIB"'const[f,n]=a;const r=rj(f);if(!(r.targets||{})[n]){console.log("no such target");process.exit(1)}r.default=n;wj(f,r);console.log("default =",n)' "$R" "${3:?name}" ;;
+    list) jsrun "$JSLIB"'const r=rj(a[0]);for(const[n,t]of Object.entries(r.targets||{}))console.log((r.default===n?"* ":"  ")+n,t.url,t.keyFile?"(key)":"(no key)");for(const k of["byWorktree","byRepo"])for(const[i,n]of Object.entries(r[k]||{}))console.log("  route",k,i,"->",n)' "$R" ;;
+    *) usage ;;
+   esac ;;
+ route)
+   case "$sub" in worktree) k=byWorktree;; repo) k=byRepo;; *) usage;; esac
+   jsrun "$JSLIB"'const[f,k,i,n]=a;const r=rj(f);if(!(r.targets||{})[n]){console.log("no such target",n);process.exit(1)}r[k]=r[k]||{};r[k][i]=n;wj(f,r);console.log("route",k,i,"->",n)' "$R" "$k" "${3:?id}" "${4:?target}" ;;
+ watch)
+   case "$sub" in
+    add) key="${3:?key}"; shift 3; label="$key"; tgt=""
+      while [ $# -gt 0 ]; do case "$1" in --target) tgt="${2:?}"; shift 2;; *) label="$1"; shift;; esac; done
+      jsrun "$JSLIB"'const[f,k,l,t]=a;const d=rj(f);d[k]={label:l,...(t?{target:t}:{}),added:new Date().toISOString()};wj(f,d);console.log("watching",k,"as",l,t?"-> "+t:"(default route)")' "$W" "$key" "$label" "$tgt" ;;
+    remove) jsrun "$JSLIB"'const[f,k]=a;const d=rj(f);console.log(k in d?"removed":"not found",k);delete d[k];wj(f,d)' "$W" "${3:?key}" ;;
+    list) cat "$W"; echo ;;
+    *) usage ;;
+   esac ;;
+ test)
+   t="${2:-}"; ev='{"time":"'"$(date -u +%FT%TZ)"'","label":"orca-notify test","watchKey":"test","agentState":"done","title":"test","body":"orca-notify test event","paneKey":null,"worktreeId":null,"seq":0,"source":"orca-notify-test"}'
+   line=$(jsrun "$JSLIB"'const r=rj(a[0]);const n=a[1]||r.default;const t=(r.targets||{})[n];if(!t){console.error("no such target");process.exit(1)}console.log(t.url+"\t"+(t.keyFile||""))' "$R" "$t")
+   printf '%s' "$ev" | /bin/bash "$D/wake.sh" "${line%%$'\t'*}" "${line#*$'\t'}" ;;
+ status) launchctl print "gui/$(id -u)/$LABEL" 2>/dev/null | grep -E "state =|pid =|last exit" || echo "not loaded ($LABEL)"
+   [ -s "$D/.pairing.json" ] && echo "paired: yes" || echo "paired: NO (run: orca-notify pair)"
+   tail -n 3 "$D/listener.log" 2>/dev/null || true ;;
+ tail) tail -n "${2:-20}" "$D/listener.log" ;;
+ restart) launchctl kickstart -k "gui/$(id -u)/$LABEL" && echo restarted ;;
+ *) usage ;;
+esac

@@ -1,0 +1,14 @@
+.pairing.json
+.webhook_key
+*.key
+keys/
+state.json
+events.jsonl
+*.log
+.wake.out
+.label
+watch.json
+routes.json
+*.tmp
+.DS_Store
+node_modules/
