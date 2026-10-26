@@ -44,10 +44,10 @@ If the endpoint needs a bearer token, save it to `~/.orca-notify/keys/default.ke
 ```json
 {
   "time": "2026-01-01T12:00:00.000Z",
-  "label": "polytrader/main",
+  "label": "myapp/main",
   "watchKey": null,
   "agentState": "done",
-  "title": "Agent done: polytrader/main",
+  "title": "Agent done: myapp/main",
   "body": null,
   "paneKey": "<tabId>:<leafId>",
   "worktreeId": "<repoId>::/path/to/worktree",
