@@ -1,4 +1,6 @@
-# Orca Notify (`xinnyu.agent-notify`)
+# Agent Notify (`agent-notify`)
+
+*(Listed in Orca as **Orca Notify**; its commands start with "Orca Notify:".)*
 
 **An Orca plugin that sends a webhook when a coding agent finishes, gets blocked, or waits for your input. You get exactly one notification per finished task.**
 
