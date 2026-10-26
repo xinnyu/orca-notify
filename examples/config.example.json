@@ -12,5 +12,5 @@
   "states": ["done", "blocked", "waiting"],
   "watch": "all",
   "retries": 2,
-  "timeoutMs": 10000
+  "timeoutMs": 5000
 }

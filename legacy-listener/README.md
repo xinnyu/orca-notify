@@ -1,3 +1,5 @@
+> **Legacy, not needed.** Use the Orca plugin at the [repo root](../README.md). This standalone listener is kept for reference only.
+
 # orca-notify
 
 Get a webhook call when a coding agent running in Orca finishes, gets blocked, or waits for input.

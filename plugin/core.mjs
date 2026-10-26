@@ -24,7 +24,7 @@ export function normalizeConfig(raw) {
     targets,
     rules: Array.isArray(c.rules) ? c.rules.filter(r => r && typeof r === 'object') : [],
     retries: Number.isInteger(c.retries) ? Math.max(0, Math.min(c.retries, 5)) : 2,
-    timeoutMs: Number.isInteger(c.timeoutMs) ? c.timeoutMs : 10000,
+    timeoutMs: Number.isInteger(c.timeoutMs) ? c.timeoutMs : 5000,
   };
 }
 
@@ -100,7 +100,7 @@ export function formatBody(format, p) {
 }
 
 /** POST JSON with Bearer auth and small exponential-backoff retry. Returns {ok,status,attempts,error}. */
-export async function postWithRetry(url, key, body, { retries = 2, timeoutMs = 10000, fetchImpl = fetch, sleep = ms => new Promise(r => setTimeout(r, ms)) } = {}) {
+export async function postWithRetry(url, key, body, { retries = 2, timeoutMs = 5000, fetchImpl = fetch, sleep = ms => new Promise(r => setTimeout(r, ms)) } = {}) {
   let last = { ok: false, status: 0, attempts: 0, error: null };
   for (let i = 0; i <= retries; i++) {
     if (i) await sleep(1000 * 2 ** (i - 1));
@@ -122,15 +122,38 @@ export async function postWithRetry(url, key, body, { retries = 2, timeoutMs = 1
 
 /**
  * Merge "pending" drop-in files into a raw config object (pure; caller does the IO).
- * pending: [{name, url, format?, makeDefault?, noKey?}]
+ * pending: [{name, url?, format?, makeDefault?, noKey?, remove?, order}] — applied in `order`
+ * (the time the user ran add-target), so the FIRST target ever added becomes the default.
+ * Returns {config, removed: [names]}.
  */
 export function mergePending(raw, pending) {
   const c = raw && typeof raw === 'object' ? { ...raw } : {};
   c.targets = { ...(c.targets || {}) };
-  for (const p of pending) {
-    if (!/^[A-Za-z0-9_-]{1,64}$/.test(p.name) || !/^https?:\/\//.test(p.url)) continue;
-    c.targets[p.name] = { url: p.url, ...(p.format ? { format: p.format } : {}), ...(p.noKey ? { noKey: true } : {}) };
+  const removed = [];
+  for (const p of [...pending].sort((a, b) => (a.order ?? 0) - (b.order ?? 0))) {
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(p.name)) continue;
+    if (p.remove) {
+      delete c.targets[p.name]; removed.push(p.name);
+      if (c.defaultTarget === p.name) delete c.defaultTarget;
+      continue;
+    }
+    if (typeof p.url !== 'string' || !/^https?:\/\//.test(p.url)) continue;
+    c.targets[p.name] = { url: p.url, ...(FORMATS.includes(p.format) && p.format !== 'generic' ? { format: p.format } : {}), ...(p.noKey ? { noKey: true } : {}) };
     if (p.makeDefault || (!c.defaultTarget && !c.url)) c.defaultTarget = p.name;
   }
-  return c;
+  return { config: c, removed };
+}
+
+/** Short user-facing hint for a failed delivery. */
+export function failureHint(r, { hasKey, noKey, target }) {
+  if (r.status === 401 || r.status === 403) return `HTTP ${r.status}: the endpoint rejected the key. Re-add it: agent-notify add-target ${target} <url>`;
+  if (!hasKey && !noKey) return `HTTP ${r.status || '-'}: no key stored for "${target}"`;
+  if (!r.status) return `could not reach the webhook (${r.error || 'network error'})`;
+  return `HTTP ${r.status}`;
+}
+
+/** Redact a URL for display: keep scheme+host, hide path and query (they often contain secrets). */
+export function redactUrl(u) {
+  const m = /^(https?:\/\/[^/?#]+)/.exec(String(u));
+  return m ? m[1] + (String(u).length > m[1].length ? '/…' : '') : '…';
 }

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeConfig, decide, buildPayload, formatBody, postWithRetry, mergePending, splitWorktreeId } from '../plugin/core.mjs';
+import { normalizeConfig, decide, buildPayload, formatBody, postWithRetry, mergePending, splitWorktreeId, failureHint, redactUrl } from '../plugin/core.mjs';
 
 const cfg = normalizeConfig({
   defaultTarget: 'a', targets: { a: { url: 'http://a' }, b: { url: 'http://b' }, c: { url: 'http://c' } },
@@ -50,13 +50,31 @@ test('formats', () => {
   assert.equal(formatBody('slack', p).text, 'Agent done: L'); assert.equal(formatBody('discord', p).content, 'Agent done: L');
   assert.equal(formatBody('generic', p), p);
 });
-test('mergePending', () => {
-  const c = mergePending({ url: '', targets: {} }, [{ name: 'bot', url: 'https://h/x' }, { name: 'bad name', url: 'https://h' }, { name: 'ftp', url: 'ftp://x' }]);
-  assert.deepEqual(Object.keys(c.targets), ['bot']); assert.equal(c.defaultTarget, 'bot');
-  const d = mergePending(c, [{ name: 'two', url: 'https://h/2', format: 'slack' }]);
-  assert.equal(d.defaultTarget, 'bot'); assert.equal(d.targets.two.format, 'slack');
-  assert.equal(mergePending(d, [{ name: 'three', url: 'https://h/3', makeDefault: true }]).defaultTarget, 'three');
+test('mergePending: add order decides default, not name', () => {
+  const { config: c } = mergePending({ url: '', targets: {} }, [
+    { name: 'zeta', url: 'https://h/z', order: 1 }, { name: 'alpha', url: 'https://h/a', order: 2 },
+    { name: 'bad name', url: 'https://h', order: 3 }, { name: 'ftp', url: 'ftp://x', order: 4 }]);
+  assert.deepEqual(Object.keys(c.targets).sort(), ['alpha', 'zeta']); assert.equal(c.defaultTarget, 'zeta');
+  const { config: d } = mergePending(c, [{ name: 'two', url: 'https://h/2', format: 'slack' }]);
+  assert.equal(d.defaultTarget, 'zeta'); assert.equal(d.targets.two.format, 'slack');
+  assert.equal(mergePending(d, [{ name: 'three', url: 'https://h/3', makeDefault: true }]).config.defaultTarget, 'three');
+  assert.equal(mergePending(d, [{ name: 'x', url: 'https://h/x', format: 'bogus' }]).config.targets.x.format, undefined);
 });
+test('mergePending: remove target clears default', () => {
+  const { config, removed } = mergePending({ defaultTarget: 'a', targets: { a: { url: 'https://a' }, b: { url: 'https://b' } } }, [{ name: 'a', remove: true }]);
+  assert.deepEqual(removed, ['a']); assert.deepEqual(Object.keys(config.targets), ['b']); assert.equal(config.defaultTarget, undefined);
+  assert.equal(normalizeConfig(config).defaultTarget, 'b');
+});
+test('failureHint', () => {
+  assert.match(failureHint({ status: 401 }, { hasKey: true, target: 't' }), /add-target t/);
+  assert.match(failureHint({ status: 0, error: 'timeout' }, { hasKey: true, target: 't' }), /could not reach/);
+  assert.match(failureHint({ status: 500 }, { hasKey: false, noKey: false, target: 't' }), /no key stored/);
+});
+test('redactUrl', () => {
+  assert.equal(redactUrl('https://hooks.slack.com/services/T/B/secret?token=x'), 'https://hooks.slack.com/…');
+  assert.equal(redactUrl('https://example.com'), 'https://example.com');
+});
+test('default timeout is short', () => assert.equal(normalizeConfig({}).timeoutMs, 5000));
 test('retry on 500 then ok, bearer header', async () => {
   const calls = []; let n = 0;
   const r = await postWithRetry('http://x', 'k', {}, { fetchImpl: async (u, o) => { calls.push(o.headers.Authorization); return { ok: ++n > 1, status: n > 1 ? 200 : 500 }; }, sleep: async () => {} });

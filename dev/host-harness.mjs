@@ -1,7 +1,7 @@
 // End-to-end harness: forks Orca's REAL plugin-host-entry.js (same protocol Orca uses),
 // plays the host side (storage/secrets/notifications in memory), and points the plugin at a
 // throwaway local HTTP receiver. Run with Orca's runtime:
-//   ELECTRON_RUN_AS_NODE=1 /Applications/Orca.app/Contents/MacOS/Orca test/host-harness.mjs
+//   ELECTRON_RUN_AS_NODE=1 /Applications/Orca.app/Contents/MacOS/Orca dev/host-harness.mjs
 import { fork } from 'node:child_process';
 import http from 'node:http';
 import fs from 'node:fs';
@@ -10,6 +10,7 @@ import path from 'node:path';
 import assert from 'node:assert/strict';
 
 const ENTRY = process.env.PLUGIN_HOST_ENTRY || '/Applications/Orca.app/Contents/Resources/app.asar.unpacked/out/main/plugin-host-entry.js';
+if (!fs.existsSync(ENTRY)) { console.log('SKIP: Orca plugin host not found at', ENTRY); process.exit(0); }
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
 const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'orca-plugin.json'), 'utf8'));
 
@@ -42,6 +43,7 @@ const host = {
   'storage.set': p => { storage[p.key] = structuredClone(p.value); return { ok: true }; },
   'secrets.get': p => ({ value: secrets[p.key] ?? null }),
   'secrets.set': p => { secrets[p.key] = p.value; return { ok: true }; },
+  'secrets.delete': p => { delete secrets[p.key]; return { ok: true }; },
   'notifications.show': p => { notes.push(p); return { delivered: true }; },
 };
 const granted = manifest.capabilities.map(c => c.kind);
@@ -56,7 +58,7 @@ child.on('message', m => {
   else if (m.type === 'eventAck') acks++;
   else if (m.type === 'commandResult') waiters.get(m.callId)?.(m);
   else if (m.type === 'hostCall') {
-    const h = host[m.method]; const cap = { 'storage.get': 'storage', 'storage.set': 'storage', 'secrets.get': 'secrets', 'secrets.set': 'secrets', 'notifications.show': 'notifications:show' }[m.method];
+    const h = host[m.method]; const cap = { 'storage.get': 'storage', 'storage.set': 'storage', 'secrets.get': 'secrets', 'secrets.set': 'secrets', 'secrets.delete': 'secrets', 'notifications.show': 'notifications:show' }[m.method];
     if (!h || !granted.includes(cap)) child.send({ type: 'hostResult', callId: m.callId, ok: false, errorCode: 'capability_denied', error: 'denied ' + m.method });
     else child.send({ type: 'hostResult', callId: m.callId, ok: true, value: h(m.params) });
   }
