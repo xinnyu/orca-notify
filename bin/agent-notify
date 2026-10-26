@@ -4,19 +4,71 @@
 #       Reads the bearer key from stdin (hidden prompt when interactive; empty = no key).
 #   agent-notify remove-target <name>   Remove a target and its stored key.
 #   agent-notify remove-key <name>      Delete a key file that has not been imported yet.
-#   agent-notify status                 Show config (URLs redacted) and pending changes. Never prints keys.
+#   agent-notify status                 Show config (URLs redacted), pending changes, watch count. Never prints keys.
+#   agent-notify watch <paneKey> [--label L] [--target T] [--ttl 24h] [--once]
+#   agent-notify watch --worktree <id> | --path <prefix> | --repo <repoId> [same options]
+#       Register what to notify about (used with "watch": "listed"). One file per watch, atomic, idempotent.
+#   agent-notify unwatch <paneKey> | --worktree <id> | --path <prefix> | --repo <repoId>
+#   agent-notify list                   Watches with age and time left.   agent-notify prune   Delete expired ones.
+#   agent-notify migrate-rules          Move paneKey rules from config.json into the watch dir.
 # Changes apply the next time Orca starts the plugin: on the next agent event, or when you run
 # "Orca Notify: Send test event" / "Show status" from the command palette (Cmd+J).
 set -euo pipefail
-D="$HOME/.orca-notify"; P="$D/pending"; K="$D/keys"
-umask 077; mkdir -p "$P" "$K"; chmod 700 "$D" "$P" "$K"
-usage() { sed -n '3,9p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
+D="$HOME/.orca-notify"; P="$D/pending"; K="$D/keys"; W="$D/watch"
+umask 077; mkdir -p "$P" "$K" "$W"; chmod 700 "$D" "$P" "$K" "$W"
+usage() { sed -n '3,15p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
 die() { echo "agent-notify: $*" >&2; exit 2; }
 valid_name() { [[ "$1" =~ ^[A-Za-z0-9_-]{1,64}$ ]] || die "invalid name '$1' (letters, digits, - and _ only)"; }
 redact() { sed -E 's#(https?://[^/"?]+)[^"]*#\1/…#g'; }
 next_order() { printf '%s%03d' "$(date +%s)" "$(ls "$P" 2>/dev/null | grep -c . || true)"; }
 clear_pending() { rm -f "$P/$1".url "$P/$1".format "$P/$1".default "$P/$1".nokey "$P/$1".remove "$P/$1".order; }
 hint() { echo "Applies when Orca next starts the plugin (next agent event, or Cmd+J → 'Orca Notify: Send test event'). Check with: agent-notify status"; }
+
+# --- watch registry (format shared with plugin/watch.mjs) ---
+hexenc() { printf '%s' "$1" | od -An -v -tx1 | tr -d ' \n'; }
+sha256() { if command -v shasum >/dev/null; then printf '%s' "$1" | shasum -a 256; else printf '%s' "$1" | sha256sum; fi | cut -d' ' -f1; }
+wfile() { local e; e=$(hexenc "$2"); [ ${#e} -gt 200 ] && e="h$(sha256 "$2")"; printf '%s/%s-%s.json' "$W" "$1" "$e"; }
+jstr() { printf '"%s"' "$(printf '%s' "$1" | tr -d '\000-\037' | sed 's/\\/\\\\/g; s/"/\\"/g')"; }
+mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1"; }
+# set a file's mtime to epoch $2 (mtime = expiry)
+setmtime() { local t; t=$(date -r "$2" +%Y%m%d%H%M.%S 2>/dev/null || date -d "@$2" +%Y%m%d%H%M.%S); touch -m -t "$t" "$1"; }
+ttl_secs() { # 24h / 30m / 2d / 90s / plain number = hours
+  case "$1" in *[!0-9smhd]*|"") die "invalid --ttl '$1' (e.g. 24h, 30m, 2d)";; esac
+  local n="${1%[smhd]}"; [[ "$n" =~ ^[0-9]+$ ]] && [ "$n" -gt 0 ] || die "invalid --ttl '$1'"
+  case "$1" in *s) echo "$n";; *m) echo $((n*60));; *d) echo $((n*86400));; *) echo $((n*3600));; esac; }
+default_ttl() { local h; h=$(sed -nE 's/.*"watchTtlHours"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/p' "$D/config.json" 2>/dev/null | head -1); echo $(( ${h:-24} > 0 ? ${h:-24}*3600 : 86400 )); }
+KIND=""; KEY=""; LABEL=""; TARGET=""; TTL=""; ONCE=0
+parse_key() { # sets KIND/KEY (+ options when $1=opts)
+  local opts="$1"; shift
+  while [ $# -gt 0 ]; do case "$1" in
+    --worktree|--path|--repo) [ $# -ge 2 ] || die "$1 needs a value"; [ -z "$KEY" ] || die "only one key"
+       case "$1" in --worktree) KIND=worktree;; --path) KIND=path;; --repo) KIND=repo;; esac; KEY="$2"; shift 2;;
+    --label|--target|--ttl) [ "$opts" = opts ] || die "unknown option '$1'"; [ $# -ge 2 ] || die "$1 needs a value"
+       case "$1" in --label) LABEL="$2";; --target) valid_name "$2"; TARGET="$2";; --ttl) TTL=$(ttl_secs "$2");; esac; shift 2;;
+    --once) [ "$opts" = opts ] || die "unknown option '$1'"; ONCE=1; shift;;
+    -h|--help) usage 0;;
+    -*) die "unknown option '$1'";;
+    *) [ -z "$KEY" ] || die "only one key"; KIND=pane; KEY="$1"; shift;; esac; done
+  [ -n "$KEY" ] || die "missing paneKey (or --worktree/--path/--repo)"; }
+field() { case "$1" in pane) echo paneKey;; worktree) echo worktreeId;; path) echo pathPrefix;; repo) echo repoId;; esac; }
+write_watch() { # kind key label target ttlSec once
+  local f tmp now exp; f=$(wfile "$1" "$2"); now=$(date +%s); exp=$((now + $5))
+  tmp="$W/.tmp.$(basename "$f").$$.$RANDOM"
+  { printf '{%s:%s' "\"$(field "$1")\"" "$(jstr "$2")"
+    [ -n "$3" ] && printf ',"label":%s' "$(jstr "$3")"
+    [ -n "$4" ] && printf ',"target":%s' "$(jstr "$4")"
+    [ "$6" = 1 ] && printf ',"once":true'
+    printf ',"ttlSec":%s,"created":%s,"expiresAt":%s}\n' "$5" "$now" "$exp"; } > "$tmp"
+  chmod 600 "$tmp"; setmtime "$tmp" "$exp"; mv -f "$tmp" "$f"; }
+jget() { sed -nE 's/.*"'"$2"'":("(([^"\\]|\\.)*)"|([0-9]+|true)).*/\2\4/p' "$1" | head -1 | sed 's/\\"/"/g; s/\\\\/\\/g'; }
+human() { local s=$1; if [ "$s" -ge 86400 ]; then echo "$((s/86400))d$((s%86400/3600))h"; elif [ "$s" -ge 3600 ]; then echo "$((s/3600))h$((s%3600/60))m"; elif [ "$s" -ge 60 ]; then echo "$((s/60))m"; else echo "${s}s"; fi; }
+prune() { local n=0 now f; now=$(date +%s)
+  for f in "$W"/*.json; do [ -e "$f" ] || continue; [ "$(mtime "$f")" -le "$now" ] && rm -f "$f" && n=$((n+1)); done
+  for f in "$W"/.tmp.*; do [ -e "$f" ] || continue; [ $((now - $(mtime "$f"))) -gt 60 ] && rm -f "$f"; done
+  echo "$n"; }
+find_node() { if command -v node >/dev/null; then echo node; return; fi
+  for o in /Applications/Orca.app/Contents/MacOS/Orca "$HOME/Applications/Orca.app/Contents/MacOS/Orca"; do [ -x "$o" ] && { echo "ELECTRON_RUN_AS_NODE=1 $o"; return; }; done
+  die "migrate-rules needs node (or Orca.app) to edit config.json"; }
 
 case "${1:-}" in
   -h|--help|help) usage 0 ;;
@@ -59,6 +111,44 @@ case "${1:-}" in
     echo "config: $D/config.json"
     if [ -f "$D/config.json" ]; then redact < "$D/config.json"; else echo "(not created yet; the plugin creates it on first run)"; fi
     echo "pending: $(ls "$P" 2>/dev/null | grep -E '\.(url|remove)$' | tr '\n' ' ')"
-    echo "keys waiting for import: $(ls "$K" 2>/dev/null | sed 's/\.key$//' | tr '\n' ' ')" ;;
+    echo "keys waiting for import: $(ls "$K" 2>/dev/null | sed 's/\.key$//' | tr '\n' ' ')"
+    prune >/dev/null; echo "watches: $(ls "$W" 2>/dev/null | grep -c '\.json$' || true) (agent-notify list)" ;;
+  watch)
+    shift; parse_key opts "$@"
+    [ -n "$TTL" ] || TTL=$(default_ttl)
+    write_watch "$KIND" "$KEY" "$LABEL" "$TARGET" "$TTL" "$ONCE"
+    echo "Watching $(field "$KIND") $KEY$([ -n "$LABEL" ] && echo " ($LABEL)") for $(human "$TTL")$([ $ONCE = 1 ] && echo ', once') (renewed while the agent is working)." ;;
+  unwatch)
+    shift; parse_key noopts "$@"; f=$(wfile "$KIND" "$KEY")
+    if [ -e "$f" ]; then rm -f "$f"; echo "Unwatched $(field "$KIND") $KEY."; else echo "Not watched: $KEY"; fi ;;
+  prune) echo "Pruned $(prune) expired watch(es)." ;;
+  list)
+    prune >/dev/null; now=$(date +%s); n=0
+    for f in "$W"/*.json; do [ -e "$f" ] || continue; n=$((n+1))
+      k=""; for fl in paneKey worktreeId pathPrefix repoId; do v=$(jget "$f" "$fl"); [ -n "$v" ] && { k="$fl=$v"; break; }; done
+      c=$(jget "$f" created); l=$(jget "$f" label); t=$(jget "$f" target); o=$(jget "$f" once)
+      printf '%s  label="%s" target=%s age=%s expires_in=%s%s\n' "$k" "$l" "${t:-default}" "$(human $((now - ${c:-$now})))" "$(human $(( $(mtime "$f") - now )))" "$([ -n "$o" ] && echo ' once')"
+    done; [ $n = 0 ] && echo "(no watches)"; true ;;
+  migrate-rules)
+    [ -f "$D/config.json" ] || { echo "No config.json; nothing to migrate."; exit 0; }
+    nd=$(find_node); ttl=$(default_ttl)
+    out=$(env $nd - "$D/config.json" "$ttl" <<'JS'
+const fs = require('fs'); const [cf, ttlS] = process.argv.slice(2); const ttl = Number(ttlS);
+const c = JSON.parse(fs.readFileSync(cf, 'utf8')); const rules = Array.isArray(c.rules) ? c.rules : [];
+const move = rules.filter(r => r && typeof r.paneKey === 'string' && r.paneKey);
+process.stdout.write(JSON.stringify(move.map(r => ({ paneKey: r.paneKey, label: r.label || '', target: r.target || '' }))));
+JS
+) || die "could not read config.json"
+    cnt=0
+    while IFS=$'\t' read -r pk lb tg; do [ -n "$pk" ] || continue
+      [ -z "$tg" ] || valid_name "$tg"; write_watch pane "$pk" "$lb" "$tg" "$ttl" 0; cnt=$((cnt+1)); echo "moved paneKey $pk"
+    done < <(printf '%s' "$out" | env $nd -e 'for (const r of JSON.parse(require("fs").readFileSync(0,"utf8"))) console.log([r.paneKey,r.label,r.target].map(s=>String(s).replace(/[\t\n]/g," ")).join("\t"))')
+    if [ $cnt -gt 0 ]; then
+      env $nd -e '
+const fs=require("fs"), cf=process.argv[1]; const c=JSON.parse(fs.readFileSync(cf,"utf8"));
+c.rules=(c.rules||[]).filter(r=>!(r&&typeof r.paneKey==="string"&&r.paneKey));
+const t=cf+".tmp."+process.pid; fs.writeFileSync(t, JSON.stringify(c,null,2)+"\n",{mode:0o600}); fs.renameSync(t, cf);' "$D/config.json"
+    fi
+    echo "Migrated $cnt paneKey rule(s) into $W (expire after $(human "$ttl") unless the agent keeps working)." ;;
   *) usage ;;
 esac

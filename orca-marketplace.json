@@ -7,7 +7,7 @@
       "source": {
         "kind": "git",
         "url": "https://github.com/xinnyu/orca-notify.git",
-        "ref": "v1.2.0"
+        "ref": "v1.3.0"
       },
       "description": "Webhook notifications when Orca agents finish, block, or wait.",
       "categories": [

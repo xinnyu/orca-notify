@@ -25,6 +25,7 @@ export function normalizeConfig(raw) {
     rules: Array.isArray(c.rules) ? c.rules.filter(r => r && typeof r === 'object') : [],
     retries: Number.isInteger(c.retries) ? Math.max(0, Math.min(c.retries, 5)) : 2,
     timeoutMs: Number.isInteger(c.timeoutMs) ? c.timeoutMs : 5000,
+    watchTtlHours: Number.isFinite(c.watchTtlHours) && c.watchTtlHours > 0 ? c.watchTtlHours : 24,
   };
 }
 

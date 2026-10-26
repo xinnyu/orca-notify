@@ -18,7 +18,7 @@ It works with any URL that accepts a JSON `POST`: Grok Bot or Cursor automation 
 **1. Install the plugin.** Go to Settings → Plugins → **Install plugin** → **Git URL** and enter:
 
 ```
-https://github.com/xinnyu/orca-notify.git#v1.2.0
+https://github.com/xinnyu/orca-notify.git#v1.3.0
 ```
 
 Click **Install**, review the permissions, then click **Enable plugin**.
@@ -37,7 +37,7 @@ If the endpoint needs a bearer token, save it in `~/.orca-notify/keys/default.ke
 
 ```bash
 mkdir -p ~/.local/bin
-curl -fsSL https://raw.githubusercontent.com/xinnyu/orca-notify/v1.2.0/bin/agent-notify -o ~/.local/bin/agent-notify
+curl -fsSL https://raw.githubusercontent.com/xinnyu/orca-notify/v1.3.0/bin/agent-notify -o ~/.local/bin/agent-notify
 chmod +x ~/.local/bin/agent-notify          # make sure ~/.local/bin is on your PATH
 agent-notify add-target mybot https://example.com/hooks/abc        # prompts for a bearer key (Enter = none)
 agent-notify add-target slack https://hooks.slack.com/services/... --format slack --no-key
@@ -106,7 +106,29 @@ The plugin picks up changes automatically each time it starts, which happens on 
   - After any agent has run, use **Cmd+J → Orca Notify: Show last agent event** to see the latest `worktreeId` and `paneKey`.
   - If you have the `orca` CLI installed, `orca repo list` prints repo ids.
   - `pathPrefix` needs no id at all: it matches by folder.
-- **`watch: "listed"`** only notifies for panes, worktrees or repos that match a rule.
+- **`watch: "listed"`** only notifies for panes, worktrees or repos that match a rule or a watch (below).
+
+## Watches: register panes from scripts and bots (v1.3.0)
+
+With `"watch": "listed"`, bots used to register panes by editing `rules` in `config.json`. Two bots doing that at once could overwrite each other. Use the watch registry instead:
+
+```bash
+agent-notify watch <paneKey> [--label "long refactor"] [--target mybot] [--ttl 24h] [--once]
+agent-notify watch --worktree <worktreeId> | --path <folder> | --repo <repoId>   # same options
+agent-notify unwatch <paneKey>          # or --worktree / --path / --repo
+agent-notify list                       # every watch with its age and time left
+agent-notify prune                      # delete expired watches now
+agent-notify migrate-rules              # move paneKey rules from config.json into the registry
+```
+
+- **No lost updates:** each watch is its own file in `~/.orca-notify/watch/` (mode 600), written to a temp file and renamed into place. The file name is derived from the key, so watching the same pane twice just replaces the entry. Nothing is read-modify-written, so any number of parallel `watch` calls all survive (the test suite runs 50 at once).
+- **Applies immediately:** the plugin re-reads the folder on every event. Watches work exactly like `rules` with the same key and are checked before them. `rules` in `config.json` still work.
+- **No zombie entries.** Several things clean up stale watches:
+  - **TTL:** every watch expires, by default 24 h after it was last renewed. Change the default with `"watchTtlHours"` in `config.json`, or per watch with `--ttl 30m|12h|2d`. Each `working` report from the pane renews its watch, so long tasks don't expire. The expiry time is the file's mtime.
+  - **Worktree removed:** when Orca removes a worktree (`worktree.removed` event), the plugin deletes watches for that worktree, its path, and the panes last seen in it. Orca's plugin API has no "pane closed" or "tab closed" event, so watches on panes that are closed while the worktree stays rely on the TTL.
+  - **`--once`:** deletes the watch after its first `done` notification. This is off by default because an agent in a pane often runs several tasks.
+  - **Pruning:** the plugin prunes at startup, on every event, and every 10 minutes while it runs. It also deletes unreadable entries and leftover temp files older than a minute. `agent-notify list`, `status` and `prune` prune too.
+- **Migrating:** paneKey rules left in `config.json` keep working. To move them into the registry, run `agent-notify migrate-rules`. It writes the watch files first, then rewrites `config.json` atomically without those rules. Other rules stay. Do this only after v1.3.0 of the plugin is running, because older versions don't read the registry. `migrate-rules` needs `node` or Orca.app.
 
 ## Example: wake a Grok Bot / Cursor automation
 
@@ -131,7 +153,8 @@ The bot receives the JSON payload above and can act on `worktreeId`.
 | `agent-notify add-target <name> <url> [--default] [--format generic\|slack\|discord] [--no-key]` | Add or replace a target |
 | `agent-notify remove-target <name>` | Remove a target and delete its stored key |
 | `agent-notify remove-key <name>` | Delete a key file that hasn't been imported yet |
-| `agent-notify status` | Show the config with URLs redacted, plus pending changes. Never prints keys |
+| `agent-notify status` | Show the config with URLs redacted, pending changes and the watch count. Never prints keys |
+| `agent-notify watch <paneKey>` / `unwatch` / `list` / `prune` / `migrate-rules` | Manage the watch registry (see [Watches](#watches-register-panes-from-scripts-and-bots-v130)) |
 
 ## Security
 
@@ -142,7 +165,7 @@ The bot receives the JSON payload above and can act on `worktreeId`.
 ## Troubleshooting
 
 - **"Plugin installation failed. Check the source and try again."**
-  - Make sure the URL ends in a tag such as `#v1.2.0` and the plugin system is on.
+  - Make sure the URL ends in a tag such as `#v1.3.0` and the plugin system is on.
   - Plugin authors: Orca reserves plugin ids that start with `orca-`, and the publisher `stablyai`, for official plugins. Installs of such ids fail with only this generic message.
 - **Test works but real events don't arrive:**
   - Check that the plugin shows **Enabled** or **Running** in Settings → Plugins.
@@ -172,7 +195,7 @@ Tested on Orca 1.4.240. `legacy-listener/` contains an old standalone listener t
 
 **前提**：Orca ≥ 1.4.240；在 设置 → Plugins 打开 **Plugin system**（实验功能）；命令面板快捷键是 **Cmd+J**；webhook 地址必须能从运行 Orca 的这台 Mac 访问到。
 
-1. **安装**：设置 → Plugins → **Install plugin** → **Git URL**，填 `https://github.com/xinnyu/orca-notify.git#v1.2.0`，点 **Install**，然后点 **Enable plugin**。
+1. **安装**：设置 → Plugins → **Install plugin** → **Git URL**，填 `https://github.com/xinnyu/orca-notify.git#v1.3.0`，点 **Install**，然后点 **Enable plugin**。
 2. **添加 webhook**（二选一）：
    - 手写配置：创建 `~/.orca-notify/config.json`，内容为 `{ "url": "https://..." }`。需要 Bearer key 的话，把 key 写进 `~/.orca-notify/keys/default.key`。
    - 用脚本：先运行上面 Quickstart 里的 `curl` 命令装好 `agent-notify`，再运行 `agent-notify add-target mybot <url>`，按提示粘贴 key。**第一个添加的目标就是默认目标**；之后添加的目标加 `--default` 才会改成默认。Slack/Discord 加 `--format slack|discord --no-key`。
@@ -181,6 +204,14 @@ Tested on Orca 1.4.240. `legacy-listener/` contains an old standalone listener t
 - **Grok Bot / Cursor 自动化**：`agent-notify add-target bot <自动化 webhook URL> --default`，按提示粘贴 secret。
 - **触发规则**：一个任务只通知一次。`done`/`waiting` 要在该 pane 出现过 `working` 之后才触发；`blocked` 立即通知。
 - **路由**：`rules` 支持 `repoId`（即 `worktreeId` 里 `::` 前面的部分）、`pathPrefix`、`worktreeId`、`paneKey`；用 **Show last agent event** 查看 ID。
+- **登记要通知的 pane（watch，v1.3.0）**：配合 `"watch": "listed"`，用 `agent-notify watch <paneKey> [--label L] [--target T] [--ttl 24h] [--once]` 登记（也支持 `--worktree/--path/--repo`），用 `unwatch` 取消，用 `list` 查看每条登记的时长和剩余有效期，用 `prune` 立即清理过期的登记。
+  - **不丢登记**：每条登记是 `~/.orca-notify/watch/` 里的一个独立文件，先写临时文件再 rename 进去，不会读-改-写 `config.json`，所以多个 bot 同时登记也不会互相覆盖。文件名由 key 决定，重复登记同一个 pane 只会覆盖原来那条。插件每次收到事件都重新读取这个目录，不用重载。
+  - **不留僵尸文件**：
+    - 每条登记都有 TTL，默认 24 小时，可以用 `config.json` 的 `watchTtlHours` 或者 `--ttl` 修改。pane 每报一次 `working` 就自动续期，所以长任务不会过期。
+    - Orca 删除 worktree（`worktree.removed` 事件）时，插件会删掉这个 worktree 相关的登记。Orca 插件 API 没有“pane/标签页关闭”事件，单独关掉的 pane 靠 TTL 清理。
+    - 加 `--once` 的登记在第一次 done 通知后自动删除（默认不开）。
+    - 插件在启动时、每次事件时、运行期间每 10 分钟各清理一次，残留超过 1 分钟的临时文件也会删掉。
+  - **迁移**：`config.json` 里的旧 paneKey 规则照样生效。等 v1.3.0 插件运行起来以后，可以用 `agent-notify migrate-rules` 把它们挪进 watch 目录。
 - **排错**：
   - 安装失败：检查 URL 是否带 `#tag`，Plugin system 是否已打开。
   - 收不到通知：在插件卡片 **… → View logs** 里查看原因。

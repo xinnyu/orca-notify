@@ -2,12 +2,15 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { normalizeConfig, decide, buildPayload, formatBody, postWithRetry, mergePending, failureHint } from './core.mjs';
+import { normalizeConfig, decide, findRule, buildPayload, formatBody, postWithRetry, mergePending, failureHint } from './core.mjs';
+import { loadWatchDir, refreshEntry, removeEntry } from './watch.mjs';
 
 const DIR = path.join(os.homedir(), '.orca-notify');
 const CONFIG_FILE = path.join(DIR, 'config.json');
 const KEYS_DIR = path.join(DIR, 'keys');
 const PENDING_DIR = path.join(DIR, 'pending');
+const WATCH_DIR = path.join(DIR, 'watch');
+const PRUNE_EVERY_MS = 10 * 60 * 1000;
 const MAX_PANES = 500;
 
 const DEFAULT_CONFIG = {
@@ -120,6 +123,17 @@ export default async function activate(ctx) {
 
   await sync().catch(e => log('sync failed', e.message));
 
+  // Watch registry (re-read on every event: cheap, no reload needed). Also prunes zombies.
+  function watches() {
+    const { rules, removed } = loadWatchDir(WATCH_DIR);
+    if (removed.length) log('pruned watch entries:', removed.join(','));
+    return rules;
+  }
+  const effective = wr => (wr.length ? { ...cfg, rules: [...wr, ...cfg.rules] } : cfg);
+  try { watches(); } catch (e) { log('prune failed', e.message); }
+  const timer = setInterval(() => { try { watches(); } catch (e) { log('prune failed', e.message); } }, PRUNE_EVERY_MS);
+  timer.unref?.();
+
   // State bookkeeping is serialized (consistent per-pane state); deliveries run in the background
   // so a slow or dead target never delays other notifications.
   let chain = Promise.resolve();
@@ -129,24 +143,46 @@ export default async function activate(ctx) {
     await sync().catch(e => log('sync failed', e.message));
     await store.set('lastEvent', ev).catch(() => {});
     const panes = (await store.get('panes')) || {};
-    const d = decide(cfg, ev, panes[ev.paneKey]);
+    const wr = watches();
+    if (ev.state === 'working' && ev.paneKey) {
+      const w = findRule({ rules: wr }, ev);
+      if (w) refreshEntry(WATCH_DIR, w);
+    }
+    const d = decide(effective(wr), ev, panes[ev.paneKey]);
     if (ev.paneKey) {
-      delete panes[ev.paneKey]; panes[ev.paneKey] = d.pane;
+      delete panes[ev.paneKey]; panes[ev.paneKey] = { ...d.pane, wt: ev.worktreeId ?? null };
       const ks = Object.keys(panes); for (const k of ks.slice(0, Math.max(0, ks.length - MAX_PANES))) delete panes[k];
       await store.set('panes', panes);
     }
     if (!d.fire) { if (cfg.states.includes(ev.state)) log(`skip ${ev.paneKey} ${ev.state}: ${d.why}`); return; }
+    if (d.rule && d.rule.once && d.rule.file && ev.state === 'done') { removeEntry(WATCH_DIR, d.rule.file); log('once: removed watch', d.rule.file); }
     const seq = ((await store.get('seq')) || 0) + 1; await store.set('seq', seq);
     const job = send(d.target, buildPayload(ev, d.rule, seq)).catch(e => log('send error', e.message)).finally(() => inflight.delete(job));
     inflight.add(job);
+  }
+
+  // Worktree removed in Orca: drop its watch entries (worktree/path rules and panes last seen in it).
+  ctx.events.on('worktree.removed', ev => (chain = chain.then(() => onWorktreeRemoved(ev)).catch(e => log('handler error', e.message))));
+  async function onWorktreeRemoved(ev) {
+    if (!ev || !ev.worktreeId) return;
+    const panes = (await store.get('panes')) || {};
+    const gone = new Set(Object.keys(panes).filter(k => panes[k] && panes[k].wt === ev.worktreeId));
+    const p = ev.path ? ev.path.replace(/\/$/, '') : null;
+    for (const r of watches()) {
+      if ((r.paneKey && gone.has(r.paneKey)) || r.worktreeId === ev.worktreeId || (p && r.pathPrefix && r.pathPrefix.replace(/\/$/, '') === p)) {
+        removeEntry(WATCH_DIR, r.file); log('worktree removed, dropped watch', r.file);
+      }
+    }
+    for (const k of gone) delete panes[k];
+    if (gone.size) await store.set('panes', panes);
   }
 
   ctx.commands.register('reload', async () => {
     cfgMtime = -1; const n = await sync();
     if (cfgError) { await notify('Orca Notify: config.json is invalid', cfgError); return { ok: false, error: cfgError }; }
     const t = Object.keys(cfg.targets);
-    await notify('Orca Notify status', `${t.length ? 'targets: ' + t.join(', ') : 'no targets'}; default: ${cfg.defaultTarget || 'none'}; ${cfg.rules.length} rules${n ? `; imported ${n} key(s)` : ''}`);
-    return { targets: t, defaultTarget: cfg.defaultTarget, rules: cfg.rules.length, imported: n };
+    await notify('Orca Notify status', `${t.length ? 'targets: ' + t.join(', ') : 'no targets'}; default: ${cfg.defaultTarget || 'none'}; ${cfg.rules.length} rules; ${watches().length} watches${n ? `; imported ${n} key(s)` : ''}`);
+    return { targets: t, defaultTarget: cfg.defaultTarget, rules: cfg.rules.length, watches: watches().length, imported: n };
   });
   ctx.commands.register('test', async () => {
     cfgMtime = -1; await sync();

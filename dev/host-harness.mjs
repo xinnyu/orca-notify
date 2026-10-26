@@ -34,6 +34,9 @@ fs.writeFileSync(path.join(home, '.orca-notify/config.json'), JSON.stringify({
 }));
 fs.writeFileSync(path.join(home, '.orca-notify/keys/bot.key'), 'test-key-123\n');
 fs.mkdirSync(path.join(home, '.orca-notify/pending'));
+fs.mkdirSync(path.join(home, '.orca-notify/watch'));
+const wf = path.join(home, '.orca-notify/watch/pane-' + Buffer.from('t9:l9').toString('hex') + '.json');
+fs.writeFileSync(wf, JSON.stringify({ paneKey: 't9:l9', label: 'Watched', ttlSec: 3600 })); fs.utimesSync(wf, Date.now() / 1000 + 3600, Date.now() / 1000 + 3600);
 fs.writeFileSync(path.join(home, '.orca-notify/pending/extra.url'), base + '/extra');
 fs.writeFileSync(path.join(home, '.orca-notify/pending/extra.nokey'), '');
 
@@ -77,6 +80,8 @@ ev('wt1', 't1:l1', 'done');            // duplicate -> deduped
 ev('wt1', 't1:l2', 'blocked');
 ev('wt-flaky', 't2:l1', 'working');
 ev('wt-flaky', 't2:l1', 'waiting');   // routed to flaky (503 then retry)
+ev('wt9', 't9:l9', 'working');
+child.send({ type: 'deliverEvent', eventId: eid++, event: 'worktree.removed', payload: { worktreeId: 'wt9', path: '/nowhere' } });
 await settle(4000);
 const t = await cmd('test'); const le = await cmd('last-event');
 await settle(500);
@@ -92,9 +97,10 @@ try {
   assert.equal(fs.readdirSync(path.join(home, '.orca-notify/pending')).length, 0);
   const fl = got.filter(g => g.path === '/flaky');
   assert.equal(fl.length, 2, 'flaky: waiting + test'); assert.equal(fl[0].auth, null); assert.equal(fl[0].body.label, 'Flaky WT');
-  assert.ok(t.value.every(x => x.includes('OK')), JSON.stringify(t.value)); assert.equal(le.value.paneKey, 't2:l1');
+  assert.ok(t.value.every(x => x.includes('OK')), JSON.stringify(t.value)); assert.equal(le.value.paneKey, 't9:l9');
   assert.ok(fs.existsSync(path.join(home, '.orca-notify/config.json')));
-  assert.equal(acks, 7);
+  assert.equal(acks, 9);
+  assert.equal(fs.existsSync(wf), false, 'worktree.removed dropped the watch of a pane in it');
   console.log('PASS: real plugin-host-entry, %d webhook deliveries, %d notifications', got.length, notes.length);
   console.log(JSON.stringify(bot[0].body));
 } catch (e) { console.error('FAIL', e.message); console.error(logs.join('\n')); process.exitCode = 1; }

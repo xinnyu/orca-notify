@@ -3,7 +3,7 @@
   "id": "agent-notify",
   "publisher": "xinnyu",
   "name": "Orca Notify",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Webhook (generic, Slack or Discord) when an Orca agent finishes, gets blocked, or waits for input. One notification per finished task; routing by repo, worktree or pane.",
   "repository": "https://github.com/xinnyu/orca-notify",
   "engines": {
@@ -15,6 +15,9 @@
     "events": [
       {
         "on": "agent.status.changed"
+      },
+      {
+        "on": "worktree.removed"
       }
     ],
     "commands": [
