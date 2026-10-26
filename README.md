@@ -102,7 +102,7 @@ The plugin picks up changes automatically each time it starts, which happens on 
 - **Finding ids:**
   - Every event carries `worktreeId` = `<repoId>::<worktree path>`. **`repoId` is the part before `::`**, so a `repoId` rule covers all worktrees of a repo.
   - After any agent has run, use **Cmd+J → Orca Notify: Show last agent event** to see the latest `worktreeId` and `paneKey`.
-  - If you have the Orca CLI (Settings → General → install the `orca` command), `orca repo list` prints repo ids.
+  - If you have the `orca` CLI installed, `orca repo list` prints repo ids.
   - `pathPrefix` needs no id at all: it matches by folder.
 - **`watch: "listed"`** only notifies for panes, worktrees or repos that match a rule.
 
