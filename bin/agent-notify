@@ -1,0 +1,40 @@
+#!/bin/bash
+# agent-notify — set up webhook targets for the Orca "agent-notify" plugin. No dependencies.
+#   agent-notify add-target <name> <url> [--default] [--format generic|slack|discord] [--no-key]
+#        reads the bearer key from stdin (hidden prompt if interactive; empty = no key)
+#   agent-notify remove-key <name>      drop a not-yet-imported key file
+#   agent-notify status                 show config + pending files (never prints keys)
+# The plugin picks changes up on the next agent event, or run "Orca Notify: Show status" in Orca.
+set -euo pipefail
+D="$HOME/.orca-notify"; P="$D/pending"; K="$D/keys"
+umask 077; mkdir -p "$P" "$K"; chmod 700 "$D" "$P" "$K"
+usage() { sed -n '3,8p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+case "${1:-}" in
+  add-target)
+    name="${2:-}"; url="${3:-}"; [ -n "$name" ] && [ -n "$url" ] || usage; shift 3
+    [[ "$name" =~ ^[A-Za-z0-9_-]{1,64}$ ]] || { echo "name: letters, digits, - and _ only" >&2; exit 2; }
+    [[ "$url" =~ ^https?:// ]] || { echo "url must start with https://" >&2; exit 2; }
+    def=0; fmt=""; nokey=0
+    while [ $# -gt 0 ]; do case "$1" in
+      --default) def=1; shift;; --format) fmt="${2:?}"; shift 2;; --no-key) nokey=1; shift;; *) usage;; esac; done
+    key=""
+    if [ $nokey = 0 ]; then
+      if [ -t 0 ]; then printf 'Bearer key for %s (Enter for none): ' "$name" >&2; IFS= read -rs key || true; echo >&2
+      else IFS= read -r key || true; fi
+    fi
+    if [ -n "$key" ]; then printf '%s' "$key" > "$K/$name.key"; chmod 600 "$K/$name.key"; else nokey=1; fi
+    unset key
+    [ -n "$fmt" ] && printf '%s' "$fmt" > "$P/$name.format"
+    [ $def = 1 ] && : > "$P/$name.default"
+    [ $nokey = 1 ] && : > "$P/$name.nokey"
+    printf '%s' "$url" > "$P/$name.url"
+    echo "Queued target '$name'. In Orca run 'Orca Notify: Send test event' (or wait for the next agent event)."
+    ;;
+  remove-key) rm -f "$K/${2:?name}.key"; echo removed ;;
+  status)
+    echo "config: $D/config.json"; [ -f "$D/config.json" ] && sed -E 's/("(key|token|secret)[^"]*": *")[^"]*/\1***/I' "$D/config.json"
+    echo "pending targets: $(ls "$P" 2>/dev/null | grep '\.url$' | sed 's/\.url$//' | tr '\n' ' ')"
+    echo "keys waiting for import: $(ls "$K" 2>/dev/null | sed 's/\.key$//' | tr '\n' ' ')"
+    ;;
+  *) usage ;;
+esac

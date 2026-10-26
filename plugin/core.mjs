@@ -1,49 +1,85 @@
-// Pure logic for orca-notify (no Orca host dependencies) so it can be unit-tested.
+// Pure logic for agent-notify (no Orca host dependencies) so it can be unit-tested.
 
 export const DEFAULT_STATES = ['done', 'blocked', 'waiting'];
+export const FORMATS = ['generic', 'slack', 'discord'];
 
-/** Normalize a user config object, filling defaults. */
+/**
+ * Normalize a user config. Minimal valid config: { "url": "https://..." }
+ * (becomes target "default"). Full form: { targets: {name:{url,format,noKey}}, defaultTarget, rules, ... }.
+ */
 export function normalizeConfig(raw) {
   const c = raw && typeof raw === 'object' ? raw : {};
+  const targets = {};
+  for (const [n, t] of Object.entries(c.targets && typeof c.targets === 'object' ? c.targets : {})) {
+    if (t && typeof t.url === 'string' && t.url) targets[n] = { url: t.url, format: FORMATS.includes(t.format) ? t.format : 'generic', noKey: !!t.noKey };
+  }
+  if (typeof c.url === 'string' && c.url) targets.default = { url: c.url, format: FORMATS.includes(c.format) ? c.format : 'generic', noKey: !!c.noKey };
+  let defaultTarget = typeof c.defaultTarget === 'string' ? c.defaultTarget : null;
+  if (!defaultTarget && targets.default) defaultTarget = 'default';
+  if (!defaultTarget && Object.keys(targets).length === 1) defaultTarget = Object.keys(targets)[0];
   return {
     states: Array.isArray(c.states) && c.states.length ? c.states.map(String) : DEFAULT_STATES,
     watch: c.watch === 'listed' ? 'listed' : 'all',
-    defaultTarget: typeof c.defaultTarget === 'string' ? c.defaultTarget : null,
-    targets: c.targets && typeof c.targets === 'object' ? c.targets : {},
+    defaultTarget,
+    targets,
     rules: Array.isArray(c.rules) ? c.rules.filter(r => r && typeof r === 'object') : [],
     retries: Number.isInteger(c.retries) ? Math.max(0, Math.min(c.retries, 5)) : 2,
     timeoutMs: Number.isInteger(c.timeoutMs) ? c.timeoutMs : 10000,
   };
 }
 
-/** First rule matching the pane wins over a worktree rule. */
+/** Orca worktree ids look like "<repoId>::<absolute path>". */
+export function splitWorktreeId(id) {
+  if (typeof id !== 'string') return { repoId: null, path: null };
+  const i = id.indexOf('::');
+  return i < 0 ? { repoId: id, path: null } : { repoId: id.slice(0, i), path: id.slice(i + 2) };
+}
+
+/** Most specific rule wins: paneKey > worktreeId > pathPrefix > repoId. */
 export function findRule(cfg, ev) {
+  const { repoId, path } = splitWorktreeId(ev.worktreeId);
+  const under = (p, pre) => p && (p === pre || p.startsWith(pre.replace(/\/$/, '') + '/'));
   return cfg.rules.find(r => r.paneKey && r.paneKey === ev.paneKey)
     || cfg.rules.find(r => r.worktreeId && r.worktreeId === ev.worktreeId)
+    || cfg.rules.find(r => r.pathPrefix && under(path, r.pathPrefix))
+    || cfg.rules.find(r => r.repoId && r.repoId === repoId)
     || null;
 }
 
-/** Decide whether an agent.status.changed payload should fire, and to which target. */
-export function decide(cfg, ev, prevState) {
-  if (!ev || typeof ev.paneKey !== 'string') return { fire: false, why: 'no paneKey' };
+/**
+ * Per-pane state machine. `pane` = {state, armed}. A pane is "armed" once it is seen working;
+ * done/waiting only notify when armed (this drops the idle "done" a fresh session reports before
+ * any work). blocked notifies immediately (once per entry into blocked).
+ * Returns {fire, why, target, rule, pane: nextPaneState}.
+ */
+export function decide(cfg, ev, pane) {
+  const prev = pane || { state: null, armed: false };
+  if (!ev || typeof ev.paneKey !== 'string') return { fire: false, why: 'no paneKey', pane: prev };
   const state = ev.state;
-  if (!cfg.states.includes(state)) return { fire: false, why: `state ${state} not watched` };
-  if (prevState === state) return { fire: false, why: 'unchanged state (dedupe)' };
+  const next = { state, armed: prev.armed || state === 'working' };
+  const no = why => ({ fire: false, why, pane: next });
+  if (!cfg.states.includes(state)) return no(`state ${state} not watched`);
+  if (prev.state === state) return no('unchanged state');
+  if (state !== 'blocked') {
+    if (!prev.armed) return no('pane not seen working since last notification');
+    next.armed = false;
+  }
   const rule = findRule(cfg, ev);
-  if (rule && rule.mute) return { fire: false, why: 'muted by rule' };
-  if (cfg.watch === 'listed' && !rule) return { fire: false, why: 'not in rules (watch=listed)' };
+  if (rule && rule.mute) return no('muted by rule');
+  if (cfg.watch === 'listed' && !rule) return no('not in rules (watch=listed)');
   const target = (rule && rule.target) || cfg.defaultTarget;
-  if (!target || !cfg.targets[target]) return { fire: false, why: `no target (${target || 'none'})` };
-  return { fire: true, target, rule };
+  if (!target || !cfg.targets[target]) return no(`no target (${target || 'none'})`);
+  return { fire: true, target, rule, pane: next };
 }
 
-/** Webhook body: same field names as the legacy listener where available. */
+/** Webhook body (generic): same field names as the legacy listener where available. */
 export function buildPayload(ev, rule, seq) {
-  const label = (rule && rule.label) || ev.worktreeId || ev.paneKey;
+  const { path } = splitWorktreeId(ev.worktreeId);
+  const label = (rule && rule.label) || (path ? path.split('/').filter(Boolean).slice(-2).join('/') : null) || ev.paneKey;
   return {
     time: new Date(ev.receivedAt || Date.now()).toISOString(),
     label,
-    watchKey: rule ? (rule.paneKey || rule.worktreeId) : null,
+    watchKey: rule ? (rule.paneKey || rule.worktreeId || rule.pathPrefix || rule.repoId || null) : null,
     agentState: ev.state,
     title: `Agent ${ev.state}${label ? ': ' + label : ''}`,
     body: ev.mainAgent && ev.mainAgent.outcome ? `outcome: ${ev.mainAgent.outcome}` : null,
@@ -55,7 +91,15 @@ export function buildPayload(ev, rule, seq) {
   };
 }
 
-/** POST JSON with Bearer auth and small exponential-backoff retry. Returns {ok,status,attempts}. */
+/** Adapt the generic payload for chat webhooks. */
+export function formatBody(format, p) {
+  const text = `${p.title}${p.body ? ` (${p.body})` : ''}`;
+  if (format === 'slack') return { text, orca: p };
+  if (format === 'discord') return { content: text };
+  return p;
+}
+
+/** POST JSON with Bearer auth and small exponential-backoff retry. Returns {ok,status,attempts,error}. */
 export async function postWithRetry(url, key, body, { retries = 2, timeoutMs = 10000, fetchImpl = fetch, sleep = ms => new Promise(r => setTimeout(r, ms)) } = {}) {
   let last = { ok: false, status: 0, attempts: 0, error: null };
   for (let i = 0; i <= retries; i++) {
@@ -69,9 +113,24 @@ export async function postWithRetry(url, key, body, { retries = 2, timeoutMs = 1
       });
       last = { ok: res.ok, status: res.status, attempts: i + 1, error: null };
       if (res.ok) return last;
-      if (res.status >= 400 && res.status < 500 && res.status !== 429) return last; // don't retry client errors
+      if (res.status >= 400 && res.status < 500 && res.status !== 429) return last;
     } catch (e) { last = { ok: false, status: 0, attempts: i + 1, error: String(e && e.message || e) }; }
     finally { clearTimeout(t); }
   }
   return last;
+}
+
+/**
+ * Merge "pending" drop-in files into a raw config object (pure; caller does the IO).
+ * pending: [{name, url, format?, makeDefault?, noKey?}]
+ */
+export function mergePending(raw, pending) {
+  const c = raw && typeof raw === 'object' ? { ...raw } : {};
+  c.targets = { ...(c.targets || {}) };
+  for (const p of pending) {
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(p.name) || !/^https?:\/\//.test(p.url)) continue;
+    c.targets[p.name] = { url: p.url, ...(p.format ? { format: p.format } : {}), ...(p.noKey ? { noKey: true } : {}) };
+    if (p.makeDefault || (!c.defaultTarget && !c.url)) c.defaultTarget = p.name;
+  }
+  return c;
 }

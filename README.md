@@ -1,152 +1,148 @@
-# orca-notify
+# Orca Notify (`xinnyu.agent-notify`)
 
-**An Orca plugin that POSTs a JSON webhook when a coding agent finishes, gets blocked, or waits for your input.**
+**An Orca plugin that sends a webhook when a coding agent finishes, gets blocked, or waits for your input. You get exactly one notification per finished task.**
 
-Use it to wake a bot or automation (for example a Grok Bot or Cursor automation webhook), ping your phone (ntfy, Pushover, a Slack incoming webhook), or call your own server. Any URL that accepts a JSON `POST` works.
+It works with any URL that accepts a JSON `POST`: Grok Bot or Cursor automation webhooks, Slack or Discord incoming webhooks, ntfy, or your own server.
 
-- Subscribes to Orca's official plugin event `agent.status.changed`. It needs no pairing and no background daemon, and it does not depend on Orca's internal modules.
-- Fires on configurable states (default `done`, `blocked`, `waiting`), once per state change per pane.
-- Supports multiple targets with a default target and routing rules per `worktreeId` or `paneKey`, plus mute rules.
-- Stores webhook keys in Orca's encrypted per-plugin secret vault and sends them as `Authorization: Bearer <key>`.
-- Retries 5xx, 429 and network errors twice with backoff.
+## Quickstart (3 steps)
 
-> Tested against Orca **1.4.240**. The manifest and marketplace file were validated with Orca's own schema, and the worker ran under Orca's real `plugin-host-entry.js`. Orca's plugin API is marked *experimental*, so it may change.
-> Plugin id is `xinnyu.agent-notify` (Orca reserves ids starting with `orca-` for official plugins).
-> The older standalone listener (launchd plus the paired-device protocol) lives in [`legacy-listener/`](legacy-listener/) and at tag `v0-listener`.
+**1. Install.** In Orca, open Settings → **Plugins**, turn on **Plugin system**, then click **Install plugin** → **Git URL** and enter:
 
-## Install
-
-1. **Enable plugins:** Orca → Settings → **Plugins** → turn on **Plugin system**.
-2. **Install:** in the same section, click **Install**, then use one of these:
-   - **Git URL** tab: `https://github.com/xinnyu/orca-notify.git#v1.0.1` (a `#ref` is required).
-   - **Local folder** tab: the path to a clone of this repo (the folder that contains `orca-plugin.json`).
-   - Plugin authors can instead add the folder under **Development → Add path**.
-3. **Approve:** Orca shows **Review permissions**. orca-notify asks for:
-   - *Get notified when … agent status changes* (`events:subscribe`)
-   - *Store and read secrets in the plugin's own encrypted vault* (`secrets`)
-   - *Store data in the plugin's own storage folder* (`storage`)
-   - *Show desktop notifications labeled with the plugin name* (`notifications:show`)
-
-   Click **Enable plugin**. It runs as a *Background worker* (its own process on this computer).
-4. **Configure** (next section), then run **Orca Notify: Reload config and import keys** from the command palette.
-
-To remove it, open Settings → Plugins, then disable or uninstall **Orca Notify**. Delete `~/.orca-notify/` if you no longer need the config.
-
-## Configure
-
-The config lives at `~/.orca-notify/config.json`. See [`examples/config.example.json`](examples/config.example.json):
-
-```json
-{
-  "states": ["done", "blocked", "waiting"],
-  "watch": "all",
-  "defaultTarget": "bot",
-  "targets": {
-    "bot":   { "url": "https://example.com/automations/webhook/<id>" },
-    "phone": { "url": "https://ntfy.example.com/orca", "noKey": true }
-  },
-  "rules": [
-    { "worktreeId": "<worktreeId>", "target": "phone", "label": "side project" },
-    { "paneKey": "<tabId>:<leafId>", "target": "bot", "label": "backend refactor" },
-    { "worktreeId": "<noisy worktreeId>", "mute": true }
-  ],
-  "retries": 2,
-  "timeoutMs": 10000
-}
+```
+https://github.com/xinnyu/orca-notify.git#v1.1.0
 ```
 
-| Field | Meaning |
-|---|---|
-| `states` | Agent states that trigger a webhook |
-| `watch` | `all`: every pane goes to the matching rule or `defaultTarget`. `listed`: only panes or worktrees that match a rule |
-| `targets.<name>.url` | Webhook URL |
-| `targets.<name>.noKey` | `true` sends no `Authorization` header |
-| `rules[]` | A `paneKey` match wins over a `worktreeId` match. Optional `target`, `label`, `mute` |
+In **Review permissions**, click **Enable plugin**.
 
-### Webhook keys (stored encrypted)
+**2. Add a webhook.** Clone this repo, or download [`bin/agent-notify`](bin/agent-notify) (a plain bash script with no dependencies). Then run:
 
 ```bash
-mkdir -p ~/.orca-notify/keys && chmod 700 ~/.orca-notify/keys
-pbpaste > ~/.orca-notify/keys/bot.key      # file name = target name
+bin/agent-notify add-target mybot https://example.com/hooks/abc        # prompts for a bearer key (Enter = none)
+# Slack / Discord incoming webhooks need no key:
+bin/agent-notify add-target slack https://hooks.slack.com/services/... --format slack --no-key
 ```
 
-Then run **Orca Notify: Reload config and import keys**. The plugin moves each `<target>.key` into Orca's encrypted plugin vault (Electron `safeStorage`) and **deletes the plaintext file**. To rotate a key, drop a new file and run Reload again.
+**3. Test.** In Orca, press **Cmd+J** and run **Orca Notify: Send test event to all targets**. A desktop notification shows `OK` or the HTTP error for each target.
 
-### Finding IDs for rules
+That's all. The plugin reads its config on every agent event, so no reload is needed. The first target you add becomes the default, and every agent in every workspace reports to it.
 
-Let an agent change state, then run **Orca Notify: Show last agent event**. A notification shows the event's `worktreeId` and `paneKey`.
+<details><summary>No script? Edit the config by hand</summary>
 
-### Commands
+The plugin creates `~/.orca-notify/config.json` the first time it runs. The smallest working config is:
 
-| Command | What it does |
-|---|---|
-| Orca Notify: Reload config and import keys | Re-read `config.json`, import `keys/*.key` |
-| Orca Notify: Send test event | POST a sample event to `defaultTarget` and show the HTTP result |
-| Orca Notify: Show last agent event | Show the last event's IDs (for writing rules) |
+```json
+{ "url": "https://example.com/hooks/abc" }
+```
 
-Plugin logs are under Settings → Plugins → Orca Notify → **Logs**.
+If the endpoint needs a bearer token, save it to `~/.orca-notify/keys/default.key`. The file name is the target name, and `default` is the name used when you set `url` directly.
+</details>
 
-## Payload
+## What gets sent
 
-`POST <url>` · `Content-Type: application/json` · `Authorization: Bearer <key>` (unless `noKey`)
+`POST <url>` with `Content-Type: application/json`, plus `Authorization: Bearer <key>` if the target has a key.
 
 ```json
 {
   "time": "2026-01-01T12:00:00.000Z",
-  "label": "backend refactor",
-  "watchKey": "<tabId>:<leafId>",
+  "label": "polytrader/main",
+  "watchKey": null,
   "agentState": "done",
-  "title": "Agent done: backend refactor",
-  "body": "outcome: failure",
+  "title": "Agent done: polytrader/main",
+  "body": null,
   "paneKey": "<tabId>:<leafId>",
-  "worktreeId": "<worktreeId>",
+  "worktreeId": "<repoId>::/path/to/worktree",
   "seq": 42,
   "source": "orca-plugin",
-  "mainAgent": { "state": "done", "outcome": "failure", "stateStartedAt": 1767268800000 }
+  "mainAgent": { "state": "done", "stateStartedAt": 1767268800000 }
 }
 ```
 
-These are the same field names as the legacy listener. The differences:
-- `title` is generated because the plugin event carries no title or body.
-- `body` is the agent outcome when Orca provides one, otherwise `null`.
-- `seq` is a per-plugin counter.
-- `label` is the rule label, falling back to the worktree ID.
+- `"format": "slack"` sends `{ "text": "Agent done: …" }` and `"format": "discord"` sends `{ "content": "…" }`.
+- **When it fires:**
+  - `done` or `waiting` fire only after the pane was seen `working`. That gives one notification per task and skips the idle "done" a new session reports.
+  - `blocked` fires immediately, once each time the pane becomes blocked.
+- Any 2xx response counts as delivered. 5xx, 429 and network errors are retried twice. If delivery still fails, Orca shows a desktop notification.
 
-Any 2xx response counts as delivered.
+## Routing (optional)
 
-## How it works / limits
+```json
+{
+  "defaultTarget": "mybot",
+  "targets": {
+    "mybot":  { "url": "https://example.com/hooks/abc" },
+    "slack":  { "url": "https://hooks.slack.com/services/...", "format": "slack", "noKey": true }
+  },
+  "rules": [
+    { "repoId": "<repo id from `orca repo list`>", "target": "slack", "label": "side project" },
+    { "pathPrefix": "/Users/me/Project/app", "target": "mybot" },
+    { "worktreeId": "<repoId>::/path/to/worktree", "mute": true },
+    { "paneKey": "<tabId>:<leafId>", "target": "mybot", "label": "long refactor" }
+  ],
+  "states": ["done", "blocked", "waiting"],
+  "watch": "all"
+}
+```
 
-- Orca starts the worker on demand when an `agent.status.changed` event arrives, and stops it after about 5 idle minutes. Dedupe state (the last state per pane) and the counter live in plugin storage, so they survive restarts.
-- Orca's plugin API does not expose the focused pane, so there is no "watch this pane" button. Use `watch: "all"` plus rules, and use *Show last agent event* to find IDs.
-- Events from restored-but-unconfirmed sessions are filtered out by Orca and never reach the plugin.
+- **Which rule applies:** the most specific match wins, in this order: `paneKey`, `worktreeId`, `pathPrefix`, `repoId`. If nothing matches, the event goes to `defaultTarget`.
+- **Matching a repo:** a worktree id is `<repoId>::<path>`, so a `repoId` rule covers every worktree of that repo. `pathPrefix` matches by folder.
+- **`watch: "listed"`** only notifies for panes, worktrees or repos that match a rule.
+- **Finding ids:** **Orca Notify: Show last agent event** shows the latest event's `worktreeId` and `paneKey`.
+
+## Example: wake a Grok Bot / Cursor automation
+
+Create a webhook-triggered routine or automation and copy its URL and secret. Then run:
+
+```bash
+bin/agent-notify add-target bot https://<automation-webhook-url> --default   # paste the secret when prompted
+```
+
+The bot receives the JSON payload above. Have it inspect the workspace (`worktreeId`) and take the next step.
+
+## Commands (Cmd+J)
+
+| Command | What it does |
+|---|---|
+| Orca Notify: Show status | Reloads the config, imports keys, and shows the targets, the default target and the rule count |
+| Orca Notify: Send test event to all targets | Sends a sample event to every target and reports OK or the error for each |
+| Orca Notify: Show last agent event | Shows the ids you need for writing rules |
+
+`bin/agent-notify status` shows the config, the queued targets and the keys still waiting to be imported. It never prints keys.
+
+## How keys are stored
+
+Key files dropped into `~/.orca-notify/keys/` are imported into Orca's encrypted per-plugin vault (Electron `safeStorage`) the next time the plugin runs, and the plaintext file is deleted. To rotate a key, add the target again or drop a new key file.
+
+## Troubleshooting
+
+- **"Plugin installation failed. Check the source and try again."**
+  - Make sure the URL ends in a tag, for example `#v1.1.0`.
+  - Plugin authors: Orca reserves plugin ids that start with `orca-`, and the publisher `stablyai`, for official plugins. Installs of such ids fail with only this generic message. That is why this plugin's id is `agent-notify`.
+- **Nothing arrives:**
+  - Run **Send test event**. If the test works but real events don't, check that the plugin shows **Enabled** in Settings → Plugins.
+  - Check the plugin's **Logs** in Settings → Plugins. Every skipped event is logged with the reason.
+- **"no webhook configured" notification:** add a target (step 2).
+- **"config.json is invalid":** fix the JSON in `~/.orca-notify/config.json`. The notification includes the parse error.
+- **Permissions:** Orca asks once for *agent status events*, *encrypted secrets*, *plugin storage* and *desktop notifications*. If the plugin's permissions change in a new version, Orca asks again.
+- **Upgrading:** run **Install plugin** again with the new `#tag`.
 
 ## Development
 
 ```bash
-node --test test/                                   # unit tests (routing, dedupe, retry)
-ELECTRON_RUN_AS_NODE=1 /Applications/Orca.app/Contents/MacOS/Orca test/host-harness.mjs
-# ^ forks Orca's real plugin-host-entry.js, feeds events, checks deliveries to a local receiver
+node --test test/                                                     # unit tests
+ELECTRON_RUN_AS_NODE=1 /Applications/Orca.app/Contents/MacOS/Orca test/host-harness.mjs   # runs the worker under Orca's real plugin host
 ```
 
-## Security notes
+Tested on Orca 1.4.240. Orca's plugin API is marked experimental. The older standalone listener is in [`legacy-listener/`](legacy-listener/) (tag `v0-listener`).
 
-- Keys are stored in Orca's encrypted plugin vault. Plaintext key files are deleted after import.
-- Payloads contain worktree and pane IDs and agent state, but no prompts or code. Only send them to endpoints you trust, over HTTPS.
-- The worker runs as a normal process on your computer, as Orca's consent dialog says. Review the code (`plugin/`) before enabling it.
+## 中文快速上手
 
-## 中文说明
+1. **安装**：Orca → 设置 → **Plugins**，打开 **Plugin system**，点 **Install plugin** → **Git URL**，填 `https://github.com/xinnyu/orca-notify.git#v1.1.0`，在权限确认页点 **Enable plugin**。
+2. **添加 webhook**：`bin/agent-notify add-target mybot <webhook地址>`，按提示粘贴 Bearer key（没有就直接回车）。Slack/Discord 加 `--format slack|discord --no-key`。第一个添加的目标就是默认目标。
+3. **测试**：在 Orca 里按 Cmd+J，运行 **Orca Notify: Send test event to all targets**，桌面通知会显示每个目标成功还是失败。
 
-orca-notify 是一个 **Orca 插件**：agent 完成（done）、卡住（blocked）或等待输入（waiting）时，向你配置的 webhook POST 一条 JSON。可用来唤醒 Grok Bot / Cursor 自动化，或推送到手机、Slack 等。
-
-**安装**
-1. Orca → 设置 → **Plugins**，打开 **Plugin system**。
-2. 点 **Install**，二选一：**Git URL** 填 `https://github.com/xinnyu/orca-notify.git#v1.0.1`（必须带 `#ref`）；**Local folder** 填本仓库所在文件夹路径。
-3. 弹出 **Review permissions** 后，核对四项权限（事件订阅、加密密钥库、插件存储、桌面通知），点 **Enable plugin**。
-4. 写好 `~/.orca-notify/config.json`（参考 `examples/config.example.json`）。把 key 放进 `~/.orca-notify/keys/<目标名>.key`，然后在命令面板运行 **Orca Notify: Reload config and import keys**。key 会导入 Orca 的加密库，明文文件随即删除。
-
-**路由**：默认目标 `defaultTarget`；`rules` 可以按 `paneKey`（优先）或 `worktreeId` 指定目标、标签，或静音（mute）。`watch: "listed"` 表示只通知规则里列出的 pane 或 worktree。运行 **Show last agent event** 可以查看最近一次事件的 ID，方便写规则。
-
-**说明**：同一 pane 状态不变时不会重复通知；5xx、429 和网络错误会重试两次。Orca 的插件 API 仍是实验性的，已在 1.4.240 上测试。旧版独立监听器在 `legacy-listener/` 目录和 tag `v0-listener`。
+- **触发规则**：一个任务只通知一次。`done`/`waiting` 要在该 pane 出现过 `working` 之后才会触发；`blocked` 立即通知。
+- **路由**：可在 `~/.orca-notify/config.json` 的 `rules` 里按 `repoId`、`pathPrefix`、`worktreeId` 或 `paneKey` 把通知分到不同目标，也可以静音（`mute`）。
+- **key 保管**：key 会导入 Orca 的加密库，明文文件随即删除。
 
 ## License
 

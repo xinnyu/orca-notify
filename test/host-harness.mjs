@@ -32,6 +32,9 @@ fs.writeFileSync(path.join(home, '.orca-notify/config.json'), JSON.stringify({
   rules: [{ worktreeId: 'wt-flaky', target: 'flaky', label: 'Flaky WT' }],
 }));
 fs.writeFileSync(path.join(home, '.orca-notify/keys/bot.key'), 'test-key-123\n');
+fs.mkdirSync(path.join(home, '.orca-notify/pending'));
+fs.writeFileSync(path.join(home, '.orca-notify/pending/extra.url'), base + '/extra');
+fs.writeFileSync(path.join(home, '.orca-notify/pending/extra.nokey'), '');
 
 const storage = {}, secrets = {}, notes = [], logs = [];
 const host = {
@@ -65,10 +68,12 @@ const ev = (worktreeId, paneKey, state, extra = {}) => child.send({ type: 'deliv
 const cmd = id => new Promise(r => { const c = cid++; waiters.set(c, r); child.send({ type: 'invokeCommand', callId: c, commandId: id }); });
 const settle = ms => new Promise(r => setTimeout(r, ms));
 
+ev('wt1', 't0:l0', 'done');            // idle done of a fresh session -> skipped
 ev('wt1', 't1:l1', 'working');
 ev('wt1', 't1:l1', 'done', { mainAgent: { state: 'done', stateStartedAt: 1 } });
 ev('wt1', 't1:l1', 'done');            // duplicate -> deduped
 ev('wt1', 't1:l2', 'blocked');
+ev('wt-flaky', 't2:l1', 'working');
 ev('wt-flaky', 't2:l1', 'waiting');   // routed to flaky (503 then retry)
 await settle(4000);
 const t = await cmd('test'); const le = await cmd('last-event');
@@ -81,10 +86,13 @@ try {
   const bot = got.filter(g => g.path === '/bot');
   assert.deepEqual(bot.map(g => g.body.agentState), ['done', 'blocked', 'done'], 'done, blocked, test (dedupe ok)');
   assert.ok(bot.every(g => g.auth === 'Bearer test-key-123'), 'bearer');
+  assert.equal(got.filter(g => g.path === '/extra').length, 1, 'pending target added + tested');
+  assert.equal(fs.readdirSync(path.join(home, '.orca-notify/pending')).length, 0);
   const fl = got.filter(g => g.path === '/flaky');
-  assert.equal(fl.length, 1); assert.equal(fl[0].auth, null); assert.equal(fl[0].body.label, 'Flaky WT');
-  assert.equal(t.ok, true); assert.equal(le.value.paneKey, 't2:l1');
-  assert.equal(acks, 5);
+  assert.equal(fl.length, 2, 'flaky: waiting + test'); assert.equal(fl[0].auth, null); assert.equal(fl[0].body.label, 'Flaky WT');
+  assert.ok(t.value.every(x => x.includes('OK')), JSON.stringify(t.value)); assert.equal(le.value.paneKey, 't2:l1');
+  assert.ok(fs.existsSync(path.join(home, '.orca-notify/config.json')));
+  assert.equal(acks, 7);
   console.log('PASS: real plugin-host-entry, %d webhook deliveries, %d notifications', got.length, notes.length);
   console.log(JSON.stringify(bot[0].body));
 } catch (e) { console.error('FAIL', e.message); console.error(logs.join('\n')); process.exitCode = 1; }

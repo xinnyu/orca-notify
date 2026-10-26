@@ -1,16 +1,16 @@
 {
-  "states": ["done", "blocked", "waiting"],
-  "watch": "all",
-  "defaultTarget": "bot",
+  "defaultTarget": "mybot",
   "targets": {
-    "bot":   { "url": "https://example.com/automations/webhook/<id>" },
-    "phone": { "url": "https://ntfy.example.com/orca", "noKey": true }
+    "mybot": { "url": "https://example.com/hooks/abc" },
+    "slack": { "url": "https://hooks.slack.com/services/XXX", "format": "slack", "noKey": true }
   },
   "rules": [
-    { "worktreeId": "<worktreeId>", "target": "phone", "label": "side project" },
-    { "paneKey": "<tabId>:<leafId>", "target": "bot", "label": "backend refactor" },
-    { "worktreeId": "<noisy worktreeId>", "mute": true }
+    { "repoId": "<repo id from `orca repo list`>", "target": "slack", "label": "side project" },
+    { "pathPrefix": "/Users/me/Project/app", "target": "mybot" },
+    { "worktreeId": "<repoId>::/path/to/worktree", "mute": true }
   ],
+  "states": ["done", "blocked", "waiting"],
+  "watch": "all",
   "retries": 2,
   "timeoutMs": 10000
 }
