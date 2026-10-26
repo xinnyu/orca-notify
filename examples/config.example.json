@@ -1,0 +1,16 @@
+{
+  "states": ["done", "blocked", "waiting"],
+  "watch": "all",
+  "defaultTarget": "bot",
+  "targets": {
+    "bot":   { "url": "https://example.com/automations/webhook/<id>" },
+    "phone": { "url": "https://ntfy.example.com/orca", "noKey": true }
+  },
+  "rules": [
+    { "worktreeId": "<worktreeId>", "target": "phone", "label": "side project" },
+    { "paneKey": "<tabId>:<leafId>", "target": "bot", "label": "backend refactor" },
+    { "worktreeId": "<noisy worktreeId>", "mute": true }
+  ],
+  "retries": 2,
+  "timeoutMs": 10000
+}

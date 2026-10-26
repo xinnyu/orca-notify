@@ -9,6 +9,8 @@ events.jsonl
 .label
 watch.json
 routes.json
+config.json
+!examples/*.json
 *.tmp
 .DS_Store
 node_modules/

@@ -1,0 +1,26 @@
+{
+  "manifestVersion": 1,
+  "id": "orca-notify",
+  "publisher": "xinnyu",
+  "name": "Orca Notify",
+  "version": "1.0.0",
+  "description": "POST a JSON webhook when an agent finishes, gets blocked, or waits for input. Multi-target routing by worktree or pane.",
+  "repository": "https://github.com/xinnyu/orca-notify",
+  "engines": { "orca": ">=1.4.240" },
+  "pluginApi": 1,
+  "main": "plugin/main.mjs",
+  "contributes": {
+    "events": [{ "on": "agent.status.changed" }],
+    "commands": [
+      { "id": "reload", "title": "Orca Notify: Reload config and import keys", "context": "global" },
+      { "id": "test", "title": "Orca Notify: Send test event", "context": "global" },
+      { "id": "last-event", "title": "Orca Notify: Show last agent event (IDs for routing)", "context": "global" }
+    ]
+  },
+  "capabilities": [
+    { "kind": "events:subscribe" },
+    { "kind": "secrets" },
+    { "kind": "storage" },
+    { "kind": "notifications:show" }
+  ]
+}

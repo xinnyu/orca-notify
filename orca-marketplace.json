@@ -1,0 +1,12 @@
+{
+  "name": "orca-notify",
+  "owner": "xinnyu",
+  "plugins": [
+    {
+      "id": "xinnyu.orca-notify",
+      "source": { "kind": "git", "url": "https://github.com/xinnyu/orca-notify.git", "ref": "v1.0.0" },
+      "description": "Webhook notifications when Orca agents finish, block, or wait.",
+      "categories": ["notifications"]
+    }
+  ]
+}
