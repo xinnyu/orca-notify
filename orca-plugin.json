@@ -1,9 +1,9 @@
 {
   "manifestVersion": 1,
-  "id": "orca-notify",
+  "id": "agent-notify",
   "publisher": "xinnyu",
   "name": "Orca Notify",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "POST a JSON webhook when an agent finishes, gets blocked, or waits for input. Multi-target routing by worktree or pane.",
   "repository": "https://github.com/xinnyu/orca-notify",
   "engines": { "orca": ">=1.4.240" },

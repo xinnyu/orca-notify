@@ -11,13 +11,14 @@ Use it to wake a bot or automation (for example a Grok Bot or Cursor automation 
 - Retries 5xx, 429 and network errors twice with backoff.
 
 > Tested against Orca **1.4.240**. The manifest and marketplace file were validated with Orca's own schema, and the worker ran under Orca's real `plugin-host-entry.js`. Orca's plugin API is marked *experimental*, so it may change.
+> Plugin id is `xinnyu.agent-notify` (Orca reserves ids starting with `orca-` for official plugins).
 > The older standalone listener (launchd plus the paired-device protocol) lives in [`legacy-listener/`](legacy-listener/) and at tag `v0-listener`.
 
 ## Install
 
 1. **Enable plugins:** Orca → Settings → **Plugins** → turn on **Plugin system**.
 2. **Install:** in the same section, click **Install**, then use one of these:
-   - **Git URL** tab: `https://github.com/xinnyu/orca-notify.git#v1.0.0` (a `#ref` is required).
+   - **Git URL** tab: `https://github.com/xinnyu/orca-notify.git#v1.0.1` (a `#ref` is required).
    - **Local folder** tab: the path to a clone of this repo (the folder that contains `orca-plugin.json`).
    - Plugin authors can instead add the folder under **Development → Add path**.
 3. **Approve:** Orca shows **Review permissions**. orca-notify asks for:
@@ -139,7 +140,7 @@ orca-notify 是一个 **Orca 插件**：agent 完成（done）、卡住（blocke
 
 **安装**
 1. Orca → 设置 → **Plugins**，打开 **Plugin system**。
-2. 点 **Install**，二选一：**Git URL** 填 `https://github.com/xinnyu/orca-notify.git#v1.0.0`（必须带 `#ref`）；**Local folder** 填本仓库所在文件夹路径。
+2. 点 **Install**，二选一：**Git URL** 填 `https://github.com/xinnyu/orca-notify.git#v1.0.1`（必须带 `#ref`）；**Local folder** 填本仓库所在文件夹路径。
 3. 弹出 **Review permissions** 后，核对四项权限（事件订阅、加密密钥库、插件存储、桌面通知），点 **Enable plugin**。
 4. 写好 `~/.orca-notify/config.json`（参考 `examples/config.example.json`）。把 key 放进 `~/.orca-notify/keys/<目标名>.key`，然后在命令面板运行 **Orca Notify: Reload config and import keys**。key 会导入 Orca 的加密库，明文文件随即删除。
 
